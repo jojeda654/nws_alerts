@@ -106,12 +106,103 @@ class NWSAlertSensor(CoordinatorEntity):
         self._icon = DEFAULT_ICON
         self.coordinator = hass.data[DOMAIN][entry.entry_id][COORDINATOR]
 
-    @property
-    def unique_id(self):
-        """
-        Return a unique, Home Assistant friendly identifier for this entity.
-        """
-        return f"{slugify(self._name)}_{self._config.entry_id}"
+    async def async_update(self):
+        """Run update."""
+        alerts = []
+
+        try:
+            async with async_timeout.timeout(10):
+                response = await self.session.get(URL.format(self.feedid))
+                if response.status != 200:
+                    self._state = "unavailable"
+                    _LOGGER.warning(
+                        "[%s] Possible API outage. Currently unable to download from weather.gov - HTTP status code %s",
+                        self.feedid,
+                        response.status
+                    )
+                else:
+                    data = await response.json()
+
+                    if data.get("features") is not None:
+                        for alert in data["features"]:
+                            if alert.get("properties") is not None:
+                                properties = alert["properties"]
+                                if properties["ends"] is None:
+                                    properties["endsExpires"] = properties.get("expires", "null")
+                                else:
+                                    properties["endsExpires"] = properties.get("ends", "null")
+                                alerts.append(
+                                    {
+                                        "area": properties.get("areaDesc", "null"),
+                                        "certainty": properties.get("certainty", "null"),
+                                        "description": properties.get("description", "null"),
+                                        "ends": properties.get("ends", "null"),
+                                        "event": properties.get("event", "null"),
+                                        "instruction": properties.get("instruction", "null"),
+                                        "response": properties.get("response", "null"),
+                                        "sent": properties.get("sent", "null"),
+                                        "severity": properties.get("severity", "null"),
+                                        "title": properties.get("headline", "null").split(" by ")[0],
+                                        "urgency": properties.get("urgency", "null"),
+                                        "NWSheadline": properties["parameters"].get("NWSheadline", "null"),
+                                        "hailSize": properties["parameters"].get("hailSize", "null"),
+                                        "windGust": properties["parameters"].get("windGust", "null"),
+                                        "waterspoutDetection": properties["parameters"].get("waterspoutDetection", "null"),
+                                        "effective": properties.get("effective", "null"),
+                                        "expires": properties.get("expires", "null"),
+                                        "endsExpires": properties.get("endsExpires", "null"),
+                                        "onset": properties.get("onset", "null"),
+                                        "status": properties.get("status", "null"),
+                                        "messageType": properties.get("messageType", "null"),
+                                        "category": properties.get("category", "null"),
+                                        "sender": properties.get("sender", "null"),
+                                        "senderName": properties.get("senderName", "null"),
+                                        "id": properties.get("id", "null"),
+                                        "zoneid": self.feedid,
+                                    }
+                                )
+                    alerts.sort(key=lambda x: (x['id']), reverse=True)
+
+                    for sorted_alert in alerts:
+                        _LOGGER.debug(
+                            "[%s] Sorted alert ID: %s",
+                            self.feedid,
+                            sorted_alert.get("id", "null")
+                        )
+
+                    self._state = len(alerts)
+                    self._attr = {
+                        "alerts": alerts,
+                        "integration": "weatheralerts",
+                        "state": self.zone_state,
+                        "zone": self.feedid,
+                    }
+        except Exception:  # pylint: disable=broad-except
+            self.exception = sys.exc_info()[0].__name__
+            connected = False
+        else:
+            connected = True
+        finally:
+            # Handle connection messages here.
+            if self.connected:
+                if not connected:
+                    self._state = "unavailable"
+                    _LOGGER.warning(
+                        "[%s] Could not update the sensor (%s)",
+                        self.feedid,
+                        self.exception,
+                    )
+
+            elif not self.connected:
+                if connected:
+                    _LOGGER.info("[%s] Update of the sensor completed", self.feedid)
+                else:
+                    self._state = "unavailable"
+                    _LOGGER.warning(
+                        "[%s] Still no update (%s)", self.feedid, self.exception
+                    )
+
+            self.connected = connected
 
     @property
     def name(self):
@@ -119,9 +210,11 @@ class NWSAlertSensor(CoordinatorEntity):
         return self._name
 
     @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        return self._icon
+    def unique_id(self):
+        """
+        Return a unique, Home Assistant friendly identifier for this entity.
+        """
+        return f"{slugify(self._name)}_{self._config.entry_id}"
 
     @property
     def state(self):
@@ -131,26 +224,21 @@ class NWSAlertSensor(CoordinatorEntity):
         elif "state" in self.coordinator.data.keys():
             return self.coordinator.data["state"]
         return None
+        
+    @property
+    def unit_of_measurement(self):
+        """Return the unit_of_measurement."""
+        return "Alerts"
+
+    @property
+    def icon(self):
+        """Return the icon to use in the frontend, if any."""
+        return self._icon
 
     @property
     def extra_state_attributes(self):
-        """Return the state message."""
-        attrs = {}
-
-        if self.coordinator.data is None:
-            return attrs
-
-        attrs[ATTR_ATTRIBUTION] = ATTRIBUTION
-        attrs["title"] = self.coordinator.data["event"]
-        attrs["event_id"] = self.coordinator.data["event_id"]
-        attrs["message_type"] = self.coordinator.data["message_type"]
-        attrs["event_status"] = self.coordinator.data["event_status"]
-        attrs["event_severity"] = self.coordinator.data["event_severity"]
-        attrs["event_expires"] = self.coordinator.data["event_expires"]
-        attrs["display_desc"] = self.coordinator.data["display_desc"]
-        attrs["spoken_desc"] = self.coordinator.data["spoken_desc"]
-
-        return attrs
+        """Return attributes."""
+        return self._attr
 
     @property
     def available(self) -> bool:
